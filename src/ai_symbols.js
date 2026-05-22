@@ -457,7 +457,7 @@ function createMapSymbols(doc, mapDeclaration, keysData, parser) {
  * @param {Array<SymbolInformation>} symbolInfoArray - Array of SymbolInformation
  * @returns {Array<DocumentSymbol>} Array of DocumentSymbol
  */
-function convertToDocumentSymbols(symbolInfoArray) {
+function convertToDocumentSymbols2(symbolInfoArray) {
   const documentSymbols = [];
   const functionMap = new Map(); // Track function symbols for nesting variables
 
@@ -487,6 +487,80 @@ function convertToDocumentSymbols(symbolInfoArray) {
   });
 
   return documentSymbols;
+}
+
+/**
+ * Convert SymbolInformation array to DocumentSymbol array using a proper visual hierarchy
+ * @param {Array<SymbolInformation>} symbolInfoArray - Array of SymbolInformation
+ * @returns {Array<DocumentSymbol>} Array of DocumentSymbol
+ */
+function convertToDocumentSymbols(symbolInfoArray) {
+  // 1. First convert everything to DocumentSymbol objects
+  const allSymbols = symbolInfoArray.map(symbolInfo => {
+    return new DocumentSymbol(
+      symbolInfo.name,
+      symbolInfo.containerName || '',
+      symbolInfo.kind,
+      symbolInfo.location.range,
+      symbolInfo.location.range
+    );
+  });
+
+  // 2. Separate potential containers (Regions & Functions)
+  const functions = allSymbols.filter(s => s.kind === SymbolKind.Function);
+  const regions = allSymbols.filter(s => s.kind === SymbolKind.Namespace);
+
+  const roots = [];
+
+  // 3. Nest symbols based on geometric text ranges
+  allSymbols.forEach(symbol => {
+    let trueParent = null;
+
+    // If it's a variable, constant, or enum, prioritize finding an enclosing function first
+    if (symbol.kind === SymbolKind.Variable || symbol.kind === SymbolKind.Constant || symbol.kind === SymbolKind.Enum) {
+      trueParent = functions.find(f => f !== symbol && f.range.contains(symbol.range));
+    }
+
+    // If no function parent was found (or if it's a function itself checking for a region), check regions
+    if (!trueParent) {
+      // Sort regions by length descending to find the innermost region if regions are nested
+      const matchingRegions = regions
+        .filter(r => r !== symbol && r.range.contains(symbol.range))
+        .sort((a, b) => {
+          const lenA = a.range.end.line - a.range.start.line;
+          const lenB = b.range.end.line - b.range.start.line;
+          return lenA - lenB; // Innermost (smallest range) first
+        });
+      
+      if (matchingRegions.length > 0) {
+        trueParent = matchingRegions[0];
+      }
+    }
+
+    // If it's a function checking for a parent, make sure it can nest inside a region
+    if (!trueParent && symbol.kind === SymbolKind.Function) {
+      trueParent = regions.find(r => r.range.contains(symbol.range));
+    }
+
+    if (trueParent) {
+      if (!trueParent.children) {
+        trueParent.children = [];
+      }
+      trueParent.children.push(symbol);
+    } else {
+      // If it doesn't fit inside any container, it lives at the root of the file
+      roots.push(symbol);
+    }
+  });
+
+  // 4. Sort children chronologically by line appearance
+  allSymbols.forEach(symbol => {
+    if (symbol.children && symbol.children.length > 0) {
+      symbol.children.sort((a, b) => a.range.start.line - b.range.start.line);
+    }
+  });
+
+  return roots.sort((a, b) => a.range.start.line - b.range.start.line);
 }
 
 /**
